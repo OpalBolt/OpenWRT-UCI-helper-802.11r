@@ -1,127 +1,143 @@
-# OpenWRT 802.11r FT roaming helper script
+# OpenWRT UCI Helper for 802.11r/k/v Roaming
 
-EX:- 
+> **Disclaimer:** This project is AI-generated slop. The code was written with
+> heavy AI assistance. Use at your own risk, read it before you run it, and
+> don't blame anyone but yourself if it breaks your routers.
 
-## Madkour-Server# python3 helper.py 0 --ap 11:22:33:44:55:00 --ap 11:22:33:44:55:01 --ap 11:22:33:44:55:
+---
 
-This script just simplifies the bootstrap process of creating the `r0kh` and `r1kh` config options.
+## What It Does
+
+A Python script that configures 802.11r (Fast Transition), 802.11k (RRM), and
+802.11v (BSS Transition Management) across multiple OpenWRT access points.
+
+It reads router and network definitions from a YAML config file, connects to
+each router over SSH to discover WiFi interfaces and BSSIDs, then deletes
+matching `wifi-iface` sections and recreates them with the correct roaming
+settings -- all via UCI commands executed over SSH.
+
+Changes are **staged but not committed**. You review and commit manually.
+
+## Features
+
+- Automatic discovery of WiFi interfaces and BSSIDs via `ubus` and `iwinfo`.
+- Per-network toggles for 802.11r, 802.11k, and 802.11v.
+- Generates mobility domain, FT keys, and r0kh/r1kh peer lists for the full
+  AP mesh.
+- Supports WPA3-SAE, SAE-mixed, PSK2, and other encryption modes.
+- Per-network UCI network assignment (e.g. `lan`, `guest`, `iot`).
+- Hidden SSID support.
+- Non-roaming networks automatically get a per-router SSID suffix (`-r1`,
+  `-r2`, etc.) when 802.11r is disabled.
+- Dry-run mode to preview commands without touching anything.
+- Test mode with fabricated data -- no SSH, no config file needed.
+
+## Requirements
+
+- Python 3 with [PyYAML](https://pypi.org/project/PyYAML/)
+- SSH access (key-based) to your OpenWRT routers
+- OpenWRT routers with WiFi already broadly configured (the script manages
+  `wifi-iface` sections, not radio setup)
+
+### Nix
+
+A `flake.nix` is provided. Run `nix develop` to get a shell with Python,
+PyYAML, and OpenSSH.
+
+### pip
+
+```
+pip install pyyaml
+```
+
+## Configuration
+
+Copy `config.yaml.example` to `config.yaml` and edit it.
+
+```yaml
+routers:
+  - host: 192.168.1.1
+    user: root        # default: root
+    port: 22          # default: 22
+  - host: 192.168.1.2
+
+networks:
+  - ssid: MyHome-WiFi
+    key: my-secret-passphrase
+    encryption: sae          # default: sae (WPA3-SAE)
+    network: lan             # UCI network name; omit to keep discovered value
+    802.11r: true            # default: true
+    802.11k: true            # default: true
+    802.11v: true            # default: true
+    hidden: false            # default: false
+
+  - ssid: IoT-Devices
+    key: another-passphrase
+    encryption: sae-mixed
+    network: iot
+    802.11r: true
+    802.11k: true
+    802.11v: false
+
+  - ssid: Guest-Network
+    key: guest-pass
+    encryption: psk2
+    network: guest
+    802.11r: false           # disabling 802.11r forces k and v off too
+    hidden: true
+```
+
+### Notes
+
+- If `802.11r` is set to `false` for a network, `802.11k` and `802.11v` are
+  forced to `false` as well.
+- If `network` is omitted, the script keeps whatever UCI network name was
+  already configured on the router for that interface.
+- At least two APs with known BSSIDs on the same band are required for
+  802.11r configuration to be generated for a given SSID/band pair.
 
 ## Usage
 
 ```
-usage: helper.py [-h] [--ap AP] [--format {uci,config}] iface
+# Normal run (uses config.yaml, applies via SSH)
+python3 helper.py
 
-positional arguments:
-  iface                 uci wifi iface index
-                        you can obtain the uci index by looking for your ssid:
-                          uci get wireless.@wifi-iface[0].ssid
-                          uci get wireless.@wifi-iface[1].ssid
-                          ...
+# Custom config file
+python3 helper.py --config my.yaml
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --ap AP               bssid(s) of access point(s)
-  --format {uci,config}
-                        output format
-                          uci: prints uci commands (default)
-                          config: prints config file snippets
+# Dry run -- prints UCI commands without executing
+python3 helper.py --dry-run
+
+# Test mode -- dry run with fabricated data, no SSH or config needed
+python3 helper.py --test
 ```
 
-So in case you do have 3 access points sharing a SSID all over your place (Notice that there should be only one DHCP server in the network. The APs must not provide their own subnets. (Thanks [khmtambi](https://www.reddit.com/user/khmtambi) for the tip.)), just collect their BSSIDs (In LUCI, go to "Network -> Wireless" and use the BSSID of the SSID you want to provide with roaming) plus the uci wifi index (see usage) and call the script like:
+## After Running
+
+The script stages UCI changes but does **not** commit them. On each router:
 
 ```
-./helper.py 0 --ap 11:22:33:44:55:00 --ap 11:22:33:44:55:01 --ap 11:22:33:44:55:02
+uci changes wireless   # review staged changes
+uci commit wireless    # commit
+wifi reload            # apply
 ```
 
-which renders some output with random `mobility_domain` and password for inter-ap radius sessions:
+## How It Works
 
-```
-Configuration for AP with BSSID 11:22:33:44:55:00:
+1. Connects to each router over SSH.
+2. Discovers all `wifi-iface` sections via `uci show wireless`.
+3. Retrieves BSSIDs using `ubus call network.wireless status` (with
+   `iwinfo` as fallback).
+4. Determines band (2.4 GHz / 5 GHz / 6 GHz) from the `band` or `hwmode`
+   UCI option on each radio device.
+5. For each managed SSID, deletes existing `wifi-iface` sections (highest
+   index first to avoid index shifting).
+6. Recreates each interface with `uci add` + `uci set`, including:
+   - 802.11r: mobility domain, NAS ID, r1 key holder, FT keys, r0kh/r1kh
+     peer lists, PMK-R1 push, FT-over-DS disabled.
+   - 802.11k: neighbor report, beacon report.
+   - 802.11v: BSS transition, WNM sleep mode, proxy ARP.
 
-uci set wireless.@wifi-iface[0].ieee80211r='1'
-uci set wireless.@wifi-iface[0].mobility_domain='67c5'
-uci set wireless.@wifi-iface[0].pmk_r1_push='1'
-uci set wireless.@wifi-iface[0].nasid='112233445500'
-uci set wireless.@wifi-iface[0].r1_key_holder='112233445500'
-uci set wireless.@wifi-iface[0].r0kh='11:22:33:44:55:00,112233445500,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,112233445501,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,112233445502,b0b1c207b44819544b07bdc523b2d6db'
-uci set wireless.@wifi-iface[0].r1kh='11:22:33:44:55:00,11:22:33:44:55:00,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,11:22:33:44:55:01,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,11:22:33:44:55:02,b0b1c207b44819544b07bdc523b2d6db'
+## License
 
-
-Configuration for AP with BSSID 11:22:33:44:55:01:
-
-uci set wireless.@wifi-iface[0].ieee80211r='1'
-uci set wireless.@wifi-iface[0].mobility_domain='67c5'
-uci set wireless.@wifi-iface[0].pmk_r1_push='1'
-uci set wireless.@wifi-iface[0].nasid='112233445501'
-uci set wireless.@wifi-iface[0].r1_key_holder='112233445501'
-uci set wireless.@wifi-iface[0].r0kh='11:22:33:44:55:00,112233445500,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,112233445501,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,112233445502,b0b1c207b44819544b07bdc523b2d6db'
-uci set wireless.@wifi-iface[0].r1kh='11:22:33:44:55:00,11:22:33:44:55:00,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,11:22:33:44:55:01,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,11:22:33:44:55:02,b0b1c207b44819544b07bdc523b2d6db'
-
-
-Configuration for AP with BSSID 11:22:33:44:55:02:
-
-uci set wireless.@wifi-iface[0].ieee80211r='1'
-uci set wireless.@wifi-iface[0].mobility_domain='67c5'
-uci set wireless.@wifi-iface[0].pmk_r1_push='1'
-uci set wireless.@wifi-iface[0].nasid='112233445502'
-uci set wireless.@wifi-iface[0].r1_key_holder='112233445502'
-uci set wireless.@wifi-iface[0].r0kh='11:22:33:44:55:00,112233445500,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,112233445501,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,112233445502,b0b1c207b44819544b07bdc523b2d6db'
-uci set wireless.@wifi-iface[0].r1kh='11:22:33:44:55:00,11:22:33:44:55:00,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:01,11:22:33:44:55:01,b0b1c207b44819544b07bdc523b2d6db 11:22:33:44:55:02,11:22:33:44:55:02,b0b1c207b44819544b07bdc523b2d6db'
-
-Do not forget to save your changes with 'uci commit wireless'
-
-Apply your settings with 'wifi restart'
-```
-
-If you like to edit config files instead of uci commands, just change the format:
-
-```
-./helper.py 0 --ap 11:22:33:44:55:00 --ap 11:22:33:44:55:01 --ap 11:22:33:44:55:02 --format config
-
-
-Configuration for AP with BSSID 11:22:33:44:55:00:
-
-	option ieee80211r '1'
-	option mobility_domain '3780'
-	option pmk_r1_push '1'
-	option nasid '112233445500'
-	option r1_key_holder '112233445500'
-	list r0kh '11:22:33:44:55:00,112233445500,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:01,112233445501,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:02,112233445502,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:00,11:22:33:44:55:00,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:01,11:22:33:44:55:01,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:02,11:22:33:44:55:02,18880d5278d2eb37a744f5ab57bba6fb'
-
-
-Configuration for AP with BSSID 11:22:33:44:55:01:
-
-	option ieee80211r '1'
-	option mobility_domain '3780'
-	option pmk_r1_push '1'
-	option nasid '112233445501'
-	option r1_key_holder '112233445501'
-	list r0kh '11:22:33:44:55:00,112233445500,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:01,112233445501,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:02,112233445502,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:00,11:22:33:44:55:00,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:01,11:22:33:44:55:01,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:02,11:22:33:44:55:02,18880d5278d2eb37a744f5ab57bba6fb'
-
-
-Configuration for AP with BSSID 11:22:33:44:55:02:
-
-	option ieee80211r '1'
-	option mobility_domain '3780'
-	option pmk_r1_push '1'
-	option nasid '112233445502'
-	option r1_key_holder '112233445502'
-	list r0kh '11:22:33:44:55:00,112233445500,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:01,112233445501,18880d5278d2eb37a744f5ab57bba6fb'
-	list r0kh '11:22:33:44:55:02,112233445502,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:00,11:22:33:44:55:00,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:01,11:22:33:44:55:01,18880d5278d2eb37a744f5ab57bba6fb'
-	list r1kh '11:22:33:44:55:02,11:22:33:44:55:02,18880d5278d2eb37a744f5ab57bba6fb'
-
-Apply your settings with 'wifi restart'
-```
+None specified. Do whatever you want with it.

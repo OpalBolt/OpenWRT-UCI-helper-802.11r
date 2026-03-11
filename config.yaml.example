@@ -1,0 +1,46 @@
+# OpenWRT 802.11r/k/v Roaming Configuration
+#
+# Routers: list of OpenWRT APs to configure.
+# Networks: list of SSIDs with per-network feature toggles.
+#
+# The script connects via SSH to discover interfaces/BSSIDs,
+# then deletes matching wifi-iface sections and recreates them
+# with the correct roaming configuration — all executed directly
+# via SSH.  Changes are staged but NOT committed.
+#
+# After running, on each router:
+#   uci changes wireless   # review
+#   uci commit wireless    # commit
+#   wifi reload            # apply
+#
+# If 802.11r is false, 802.11k and 802.11v are forced to false as well.
+
+routers:
+  - host: 192.168.1.1
+    user: root
+    port: 22
+  - host: 192.168.1.2
+    user: root
+    port: 22
+  # - host: 192.168.1.3
+  #   user: root
+  #   port: 22
+
+networks:
+  - ssid: wifi-IOT
+    key: my-secret-passphrase
+    encryption: sae          # WPA3-SAE (default), sae-mixed, psk2, psk-mixed, …
+    network: iot             # UCI network name (e.g. lan, guest, iot); omit to keep discovered value
+    802.11r: true
+    802.11k: true
+    802.11v: false
+    hidden: false
+
+  - ssid: wifi-mgmt
+    key: another-passphrase
+    # encryption defaults to 'sae' (WPA3-SAE) when omitted
+    # network: omitted → keeps whatever was already configured on the router
+    802.11r: false
+    802.11k: false
+    802.11v: false
+    hidden: true
