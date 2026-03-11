@@ -8,7 +8,7 @@
 
 ## What It Does
 
-A Python script that configures 802.11r (Fast Transition), 802.11k (RRM), and
+A Python tool that configures 802.11r (Fast Transition), 802.11k (RRM), and
 802.11v (BSS Transition Management) across multiple OpenWRT access points.
 
 It reads router and network definitions from a YAML config file, connects to
@@ -31,6 +31,23 @@ Changes are **staged but not committed**. You review and commit manually.
   `-r2`, etc.) when 802.11r is disabled.
 - Dry-run mode to preview commands without touching anything.
 - Test mode with fabricated data -- no SSH, no config file needed.
+- `--output` flag to write all output (including DEBUG-level SSH commands) to a
+  timestamped log file.
+- Structured logging (DEBUG / INFO / WARNING / ERROR) via Python's `logging`
+  module throughout.
+
+## Project Structure
+
+| File              | Description                                                |
+|-------------------|------------------------------------------------------------|
+| `main.py`         | Entry point — CLI argument parsing, logging setup, `main()`|
+| `ssh.py`          | `SSHConnection` class for remote command execution         |
+| `models.py`       | Data classes: `WifiInterface`, `Router`, `NetworkConfig`   |
+| `discovery.py`    | Interface discovery via UCI, ubus, and iwinfo              |
+| `config_loader.py`| YAML config file loader and validator                      |
+| `apply.py`        | UCI command generation and execution (or dry-run printing) |
+| `testdata.py`     | Fabricated test data for `--test` mode                     |
+| `utils.py`        | Small standalone helpers (`random_hex`)                    |
 
 ## Requirements
 
@@ -46,7 +63,7 @@ PyYAML, and OpenSSH.
 
 ### pip
 
-```
+``` bash
 pip install pyyaml
 ```
 
@@ -98,25 +115,31 @@ networks:
 
 ## Usage
 
-```
+``` bash
 # Normal run (uses config.yaml, applies via SSH)
-python3 helper.py
+python3 main.py
 
 # Custom config file
-python3 helper.py --config my.yaml
+python3 main.py --config my.yaml
 
 # Dry run -- prints UCI commands without executing
-python3 helper.py --dry-run
+python3 main.py --dry-run
 
 # Test mode -- dry run with fabricated data, no SSH or config needed
-python3 helper.py --test
+python3 main.py --test
+
+# Write all output to an auto-named timestamped log file
+python3 main.py --test --output
+
+# Write all output to a specific log file
+python3 main.py --dry-run --output my_run.log
 ```
 
 ## After Running
 
 The script stages UCI changes but does **not** commit them. On each router:
 
-```
+``` bash
 uci changes wireless   # review staged changes
 uci commit wireless    # commit
 wifi reload            # apply
