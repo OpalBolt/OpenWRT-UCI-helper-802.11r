@@ -1,166 +1,129 @@
 # OpenWRT UCI Helper for 802.11r/k/v Roaming
 
-> **Disclaimer:** This project is AI-generated slop. The code was written with
-> heavy AI assistance. Use at your own risk, read it before you run it, and
-> don't blame anyone but yourself if it breaks your routers.
+> **Notice:** This project is 100% AI-generated code.
+> It may contain rough edges, inconsistencies, or patterns that no human would willingly produce.
+> Review before trusting it with your network.
 
 ---
 
+A Python script that automates 802.11r/k/v (Fast Transition, RRM, BSS Transition Management) configuration across multiple OpenWRT access points. It connects to routers over SSH, discovers existing WiFi interfaces and BSSIDs, then deletes all managed wifi-iface sections and recreates them from scratch with the correct UCI settings -- including per-band r0kh/r1kh peer lists -- so you don't have to do it by hand.
+
 ## What It Does
 
-A Python tool that configures 802.11r (Fast Transition), 802.11k (RRM), and
-802.11v (BSS Transition Management) across multiple OpenWRT access points.
+Configuring 802.11r roaming across multiple APs is tedious. Each access point needs to know the BSSIDs and shared keys of every other AP in the same roaming group, per SSID, per band. This script handles that automatically:
 
-It reads router and network definitions from a YAML config file, connects to
-each router over SSH to discover WiFi interfaces and BSSIDs, then deletes
-matching `wifi-iface` sections and recreates them with the correct roaming
-settings -- all via UCI commands executed over SSH.
+1. **Discovers** existing WiFi interfaces and radio bands on each router via UCI and ubus.
+2. **Phase 1** -- Deletes and recreates wifi-iface sections with base settings (SSID, encryption, key, network assignment). Commits and reloads so the hardware assigns BSSIDs.
+3. **Phase 2** -- Re-discovers BSSIDs, computes the full r0kh/r1kh mesh for each (SSID, band) group, and applies 802.11r/k/v settings. Commits and reloads again.
 
-Changes are **staged but not committed**. You review and commit manually.
+Each phase shows staged `uci changes wireless` output and asks for confirmation before committing.
 
-## Features
+## Features Configured Per Network
 
-- Automatic discovery of WiFi interfaces and BSSIDs via `ubus` and `iwinfo`.
-- Per-network toggles for 802.11r, 802.11k, and 802.11v.
-- Generates mobility domain, FT keys, and r0kh/r1kh peer lists for the full
-  AP mesh.
-- Supports WPA3-SAE, SAE-mixed, PSK2, and other encryption modes.
-- Per-network UCI network assignment (e.g. `lan`, `guest`, `iot`).
-- Hidden SSID support.
-- Non-roaming networks automatically get a per-router SSID suffix (`-r1`,
-  `-r2`, etc.) when 802.11r is disabled.
-- Dry-run mode to preview commands without touching anything.
-- Test mode with fabricated data -- no SSH, no config file needed.
-- `--output` flag to write all output (including DEBUG-level SSH commands) to a
-  timestamped log file.
-- Structured logging (DEBUG / INFO / WARNING / ERROR) via Python's `logging`
-  module throughout.
+- **802.11r** -- Fast Transition: mobility domain, NAS ID, r0kh/r1kh peer lists, PMK-R1 push, FT-over-DS disabled
+- **802.11k** -- Radio Resource Management: neighbour report, beacon report
+- **802.11v** -- BSS Transition Management, WNM sleep mode, proxy ARP
 
-## Project Structure
-
-| File              | Description                                                |
-|-------------------|------------------------------------------------------------|
-| `main.py`         | Entry point — CLI argument parsing, logging setup, `main()`|
-| `ssh.py`          | `SSHConnection` class for remote command execution         |
-| `models.py`       | Data classes: `WifiInterface`, `Router`, `NetworkConfig`   |
-| `discovery.py`    | Interface discovery via UCI, ubus, and iwinfo              |
-| `config_loader.py`| YAML config file loader and validator                      |
-| `apply.py`        | UCI command generation and execution (or dry-run printing) |
-| `testdata.py`     | Fabricated test data for `--test` mode                     |
-| `utils.py`        | Small standalone helpers (`random_hex`)                    |
+When 802.11r is disabled for a network, 802.11k and 802.11v are forced off as well. Networks without 802.11r get per-router SSID suffixes (`-r1`, `-r2`, ...) instead of a shared SSID.
 
 ## Requirements
 
-- Python 3 with [PyYAML](https://pypi.org/project/PyYAML/)
-- SSH access (key-based) to your OpenWRT routers
-- OpenWRT routers with WiFi already broadly configured (the script manages
-  `wifi-iface` sections, not radio setup)
+- Python 3
+- [PyYAML](https://pypi.org/project/PyYAML/) (`pip install pyyaml`)
+- `ssh` and optionally `sshpass` (for password-based auth) available on PATH
+- OpenWRT routers reachable over SSH
 
-### Nix
+If you use Nix, a `flake.nix` is included that provides a dev shell with Python + PyYAML, OpenSSH, and sshpass.
 
-A `flake.nix` is provided. Run `nix develop` to get a shell with Python,
-PyYAML, and OpenSSH.
+## Setup
 
-### pip
+1. Copy the example config and edit it:
 
-``` bash
-pip install pyyaml
-```
+   ```
+   cp config.yaml.example config.yaml
+   ```
 
-## Configuration
+2. Define your routers (host, user, port, optional password) and networks (SSID, key, encryption, feature toggles) in `config.yaml`. See the example file for all available options.
 
-Copy `config.yaml.example` to `config.yaml` and edit it.
-
-```yaml
-routers:
-  - host: 192.168.1.1
-    user: root        # default: root
-    port: 22          # default: 22
-  - host: 192.168.1.2
-
-networks:
-  - ssid: MyHome-WiFi
-    key: my-secret-passphrase
-    encryption: sae          # default: sae (WPA3-SAE)
-    network: lan             # UCI network name; omit to keep discovered value
-    802.11r: true            # default: true
-    802.11k: true            # default: true
-    802.11v: true            # default: true
-    hidden: false            # default: false
-
-  - ssid: IoT-Devices
-    key: another-passphrase
-    encryption: sae-mixed
-    network: iot
-    802.11r: true
-    802.11k: true
-    802.11v: false
-
-  - ssid: Guest-Network
-    key: guest-pass
-    encryption: psk2
-    network: guest
-    802.11r: false           # disabling 802.11r forces k and v off too
-    hidden: true
-```
-
-### Notes
-
-- If `802.11r` is set to `false` for a network, `802.11k` and `802.11v` are
-  forced to `false` as well.
-- If `network` is omitted, the script keeps whatever UCI network name was
-  already configured on the router for that interface.
-- At least two APs with known BSSIDs on the same band are required for
-  802.11r configuration to be generated for a given SSID/band pair.
+3. Optionally list SSIDs under `protected_ssids` -- these wifi-iface sections will never be deleted or modified.
 
 ## Usage
 
-``` bash
-# Normal run (uses config.yaml, applies via SSH)
-python3 main.py
-
-# Custom config file
-python3 main.py --config my.yaml
-
-# Dry run -- prints UCI commands without executing
-python3 main.py --dry-run
-
-# Test mode -- dry run with fabricated data, no SSH or config needed
-python3 main.py --test
-
-# Write all output to an auto-named timestamped log file
-python3 main.py --test --output
-
-# Write all output to a specific log file
-python3 main.py --dry-run --output my_run.log
+```
+python3 main.py                        # uses config.yaml
+python3 main.py --config my.yaml       # custom config path
+python3 main.py --dry-run              # show UCI commands without executing
+python3 main.py --test                 # dry-run with fabricated test data (no SSH needed)
+python3 main.py --test --output        # also write debug-level output to a timestamped log file
+python3 main.py --output run.log       # real run, log everything to run.log
 ```
 
-## After Running
+### Flags
 
-The script stages UCI changes but does **not** commit them. On each router:
+| Flag | Short | Description |
+|---|---|---|
+| `--config FILE` | `-c` | Path to YAML config file (default: `config.yaml`) |
+| `--dry-run` | `-n` | Print UCI commands without executing them |
+| `--test` | `-t` | Dry-run with fabricated test data, no SSH or config required |
+| `--output [FILE]` | `-o` | Write debug-level output to a file; auto-generates a timestamped filename if none given |
 
-``` bash
-uci changes wireless   # review staged changes
-uci commit wireless    # commit
-wifi reload            # apply
+### Dry-Run Mode
+
+`--dry-run` connects to routers and discovers interfaces but only prints the UCI commands that would be executed. `--test` goes further and skips SSH entirely, using built-in fabricated data with three routers and three networks.
+
+## Configuration Reference
+
+```yaml
+protected_ssids:
+  - my-bridge-network       # these SSIDs are never touched
+
+routers:
+  - host: 192.168.1.1
+    user: root
+    port: 22
+    password: my-ssh-password   # omit to use SSH keys
+
+networks:
+  - ssid: home-wifi
+    key: my-passphrase
+    encryption: sae             # WPA3-SAE (default), sae-mixed, psk2, psk-mixed, ...
+    network: lan                # UCI network name; omit to keep discovered value
+    802.11r: true
+    802.11k: true
+    802.11v: false
+    hidden: false
 ```
 
-## How It Works
+### Encryption Defaults
 
-1. Connects to each router over SSH.
-2. Discovers all `wifi-iface` sections via `uci show wireless`.
-3. Retrieves BSSIDs using `ubus call network.wireless status` (with
-   `iwinfo` as fallback).
-4. Determines band (2.4 GHz / 5 GHz / 6 GHz) from the `band` or `hwmode`
-   UCI option on each radio device.
-5. For each managed SSID, deletes existing `wifi-iface` sections (highest
-   index first to avoid index shifting).
-6. Recreates each interface with `uci add` + `uci set`, including:
-   - 802.11r: mobility domain, NAS ID, r1 key holder, FT keys, r0kh/r1kh
-     peer lists, PMK-R1 push, FT-over-DS disabled.
-   - 802.11k: neighbor report, beacon report.
-   - 802.11v: BSS transition, WNM sleep mode, proxy ARP.
+If `encryption` is omitted, it defaults to `sae` (WPA3-SAE).
+
+### Network Assignment
+
+If `network` is omitted, the script preserves whatever UCI network name was already configured on each router for that interface.
+
+## Project Structure
+
+| File | Purpose |
+|---|---|
+| `main.py` | Entry point, argument parsing, two-phase orchestration |
+| `config_loader.py` | Loads and validates `config.yaml` |
+| `models.py` | Data classes: `Router`, `WifiInterface`, `NetworkConfig` |
+| `ssh.py` | SSH helper using ControlMaster multiplexing |
+| `discovery.py` | Interface and radio discovery via UCI, ubus, iwinfo |
+| `apply.py` | Phase 1 (base interfaces) and Phase 2 (roaming config) UCI commands |
+| `utils.py` | Small utilities (random hex generation) |
+| `testdata.py` | Fabricated test data for `--test` mode |
+| `flake.nix` | Nix flake dev shell |
+
+## How SSH Works
+
+The script uses SSH ControlMaster multiplexing. The first connection to each router establishes a persistent master socket (10-minute timeout). All subsequent commands reuse that socket, avoiding repeated authentication. If `password` is set in the config, `sshpass` is used for the initial connection. Otherwise, standard SSH key-based or interactive authentication applies.
+
+## Acknowledgements
+
+Inspired by [walidmadkour/OpenWRT-UCI-helper-802.11r](https://github.com/walidmadkour/OpenWRT-UCI-helper-802.11r).
 
 ## License
 
-None specified. Do whatever you want with it.
+No license file is included. Treat accordingly.
