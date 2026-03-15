@@ -17,6 +17,7 @@
           packages = [
             python
             pkgs.openssh
+            pkgs.sshpass
           ];
         };
       }
