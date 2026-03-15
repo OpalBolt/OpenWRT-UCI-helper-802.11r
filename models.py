@@ -26,6 +26,7 @@ class Router:
     host: str
     ssh: SSHConnection
     interfaces: list = field(default_factory=list)
+    radios: dict = field(default_factory=dict)  # device name -> band ('2g'/'5g'/'6g')
 
 
 @dataclass

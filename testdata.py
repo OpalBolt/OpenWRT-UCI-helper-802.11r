@@ -27,6 +27,7 @@ def generate_test_data():
         # We don't need a real SSH connection for test mode
         ssh = SSHConnection(raw['host'])
         router = Router(host=raw['host'], ssh=ssh)
+        router.radios = {'radio0': '2g', 'radio1': '5g'}
 
         iface_idx = 0
         for net in test_networks:
