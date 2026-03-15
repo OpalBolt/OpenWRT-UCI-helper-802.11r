@@ -35,19 +35,25 @@ def _fill_bssids_ubus(ssh, interfaces):
     except Exception:
         return False
 
-    for _radio_name, radio_info in status.items():
+    for radio_name, radio_info in status.items():
         for iface_info in radio_info.get('interfaces', []):
             config = iface_info.get('config', {})
             ssid = config.get('ssid', '')
-            device = config.get('device', '')
-            bssid = iface_info.get('iwinfo', {}).get('bssid', '')
+            # 'device' may live in the per-interface config, or it may be
+            # absent (OpenWRT 23.05+); fall back to the top-level radio name.
+            device = config.get('device', '') or radio_name
             ifname = iface_info.get('ifname', '')
 
+            # BSSID may be in an 'iwinfo' block (not all versions include it)
+            iwinfo = iface_info.get('iwinfo', {})
+            bssid = iwinfo.get('bssid', '') if isinstance(iwinfo, dict) else ''
+
             for iface in interfaces:
-                if iface.ssid == ssid and iface.device == device:
-                    iface.bssid = bssid
-                    iface.ifname = ifname
+                if iface.ssid.lower() == ssid.lower() and iface.device == device:
+                    if ifname:
+                        iface.ifname = ifname
                     if bssid:
+                        iface.bssid = bssid
                         iface.nasid = bssid.replace(':', '')
     return True
 
@@ -67,6 +73,25 @@ def _fill_bssids_iwinfo(ssh, interfaces):
                 iface.nasid = iface.bssid.replace(':', '')
         except Exception:
             pass
+
+
+def discover_radios(router):
+    """Populate *router.radios* — a mapping of device name to band.
+
+    This is used to know which radios are available when creating
+    interfaces for networks that don't yet exist on this router.
+    """
+    ssh = router.ssh
+    raw = ssh.run("uci show wireless | grep '=wifi-device' || true", check=False)
+    radios = {}
+    for line in raw.strip().splitlines():
+        match = re.match(r'wireless\.(\w+)=wifi-device', line.strip())
+        if match:
+            device = match.group(1)
+            band = _get_band(ssh, device)
+            radios[device] = band
+    router.radios = radios
+    return radios
 
 
 def discover_interfaces(router):
