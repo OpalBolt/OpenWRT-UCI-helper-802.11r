@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_config(path):
-    """Load and validate config.yaml.  Returns (routers, networks)."""
+    """Load and validate config.yaml.  Returns (routers, networks, protected_ssids)."""
     cfg_path = Path(path)
     if not cfg_path.exists():
         logger.error("Config file not found: %s", cfg_path)
@@ -37,7 +37,8 @@ def load_config(path):
         host = entry['host']
         user = entry.get('user', 'root')
         port = entry.get('port', 22)
-        ssh = SSHConnection(host, user, port)
+        password = entry.get('password')
+        ssh = SSHConnection(host, user, port, password=password)
         routers.append(Router(host=host, ssh=ssh))
 
     # -- Networks --------------------------------------------------------------
@@ -76,4 +77,10 @@ def load_config(path):
             hidden=hidden_flag,
         ))
 
-    return routers, networks
+    # -- Protected SSIDs (lowercased for case-insensitive matching) ----------
+    protected_ssids = {s.lower() for s in cfg.get('protected_ssids', [])}
+    if protected_ssids:
+        logger.info("Protected SSIDs (will not be touched): %s",
+                    ', '.join(sorted(protected_ssids)))
+
+    return routers, networks, protected_ssids
